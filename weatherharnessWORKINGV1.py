@@ -4,13 +4,11 @@ import requests
 import numpy as np
 from datetime import datetime, date, timedelta
 import streamlit as st
-import chromadb
-from chromadb.utils import embedding_functions
 from openai import OpenAI
 
 # --- PAGE CONFIGURATION & CUSTOM STYLING ---
 st.set_page_config(
-    page_title="Global Weather Intelligence | Agent Harness + ChromaDB & API",
+    page_title="Global Weather Intelligence | Agent Harness + RAG & API",
     page_icon="🌤️",
     layout="wide"
 )
@@ -31,19 +29,13 @@ st.markdown("""
         background-color: #0b0f17; 
         color: #e2e8f0; 
     }
-    
-    /* MAIN APPLICATION TITLE HEADER */
     .main-header {
-        font-size: 2.3rem !important;
-        font-weight: 800 !important;
+        font-weight: 700;
         letter-spacing: -0.02em;
         background: linear-gradient(135deg, #60a5fa 0%, #a855f7 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        margin-bottom: 0.2rem !important;
-        line-height: 1.2 !important;
     }
-
     .disclaimer-banner {
         background-color: #1e1b4b;
         border: 1px solid #4338ca;
@@ -142,72 +134,61 @@ st.markdown("""
         letter-spacing: 0.05em;
         text-transform: uppercase;
     }
-    
-    /* UNIFORM SUB-SECTION HEADINGS (EXCLUDES MAIN TITLE) */
-    .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
-        font-size: 1.25rem !important;
-        font-weight: 700 !important;
-        color: #60a5fa !important;
-        margin-top: 18px !important;
-        margin-bottom: 8px !important;
-        border-bottom: 1px solid #1e293b !important;
-        padding-bottom: 4px !important;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 
-# --- 1. AUTOMATIC API KEY INITIALIZATION (FROM SECRETS OR TERMINAL) ---
-api_key = os.environ.get("OPENAI_API_KEY") or (st.secrets.get("OPENAI_API_KEY") if hasattr(st, "secrets") else None)
+# --- 1. API KEY INITIALIZATION ---
+api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
+if not api_key:
+    st.error("⚠️ OpenAI API Key missing! Set OPENAI_API_KEY in `.streamlit/secrets.toml` or environment variables.")
+    st.stop()
+
+client = OpenAI(api_key=api_key)
 
 
-# --- 2. CHROMADB VECTOR RAG KNOWLEDGE BASE SETUP ---
-CHROMA_DB_DIR = "./chroma_db"
-
+# --- 2. VECTOR RAG KNOWLEDGE BASE SETUP ---
 SAMPLE_KNOWLEDGE_DOCS = [
     {"id": "doc1", "text": "Travel Advisory Tokyo: Monsoon and rain activity typically spikes during summer months (June to August). Packing light rain gear is recommended."},
     {"id": "doc2", "text": "Travel Advisory Kathmandu: Winter temperatures (November to January) can drop to 2°C at night. Layered clothing and thermal jackets are required."},
     {"id": "doc3", "text": "Flight Cancellation Policy due to Severe Weather: Flights delayed over 4 hours due to storms or typhoons qualify for full ticket refund or free rebooking."},
-    {"id": "doc4", "text": "Heatwave Emergency Guidelines: When temperatures exceed 38°C (100°F), stay indoors between 12 PM and 4 PM, consume electrolytes, and avoid heavy exercise."}
+    {"id": "doc4", "text": "Heatwave Emergency Guidelines: When temperatures exceed 38°C, stay indoors between 12 PM and 4 PM, consume electrolytes, and avoid heavy exercise."}
 ]
 
 @st.cache_resource
-def get_chroma_collection():
-    """Initializes ChromaDB with local embeddings (all-MiniLM-L6-v2) without exposing keys to the client."""
-    chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
-    
-    ef = embedding_functions.DefaultEmbeddingFunction()
-    
-    collection = chroma_client.get_or_create_collection(
-        name="weather_advisories",
-        embedding_function=ef
-    )
-    
-    if collection.count() == 0:
-        documents = [doc["text"] for doc in SAMPLE_KNOWLEDGE_DOCS]
-        ids = [doc["id"] for doc in SAMPLE_KNOWLEDGE_DOCS]
-        metadatas = [{"source": "sample_policy_docs"} for _ in SAMPLE_KNOWLEDGE_DOCS]
-        collection.add(documents=documents, ids=ids, metadatas=metadatas)
-        
-    return collection
+def build_vector_store():
+    """Generates embeddings for knowledge base documents using OpenAI text-embedding-3-small."""
+    store = []
+    for doc in SAMPLE_KNOWLEDGE_DOCS:
+        res = client.embeddings.create(input=doc["text"], model="text-embedding-3-small")
+        embedding = res.data[0].embedding
+        store.append({"doc": doc, "embedding": embedding})
+    return store
 
-chroma_collection = get_chroma_collection()
+knowledge_vector_store = build_vector_store()
 
 def search_knowledge_base(query: str) -> str:
-    """RAG Tool: Performs vector similarity search using persistent ChromaDB."""
+    """RAG Tool: Searches internal document store using vector similarity."""
     try:
-        results = chroma_collection.query(
-            query_texts=[query],
-            n_results=2
-        )
+        q_emb = client.embeddings.create(input=query, model="text-embedding-3-small").data[0].embedding
+        scores = []
+        for item in knowledge_vector_store:
+            dot_product = np.dot(q_emb, item["embedding"])
+            norm_q = np.linalg.norm(q_emb)
+            norm_doc = np.linalg.norm(item["embedding"])
+            sim = dot_product / (norm_q * norm_doc)
+            scores.append((sim, item["doc"]["text"]))
         
-        docs = results.get("documents", [[]])[0]
-        if not docs:
+        scores.sort(key=lambda x: x[0], reverse=True)
+        top_matches = [doc_text for sim, doc_text in scores[:2] if sim > 0.3]
+        
+        if not top_matches:
             return json.dumps({"results": ["No highly relevant local travel/weather advisory documents found."]})
-            
-        return json.dumps({"retrieved_context": docs})
+        
+        return json.dumps({"retrieved_context": top_matches})
     except Exception as e:
-        return json.dumps({"error": f"Failed to execute ChromaDB RAG search: {str(e)}"})
+        return json.dumps({"error": f"Failed to execute RAG search: {str(e)}"})
 
 
 # --- 3. DEDUPLICATED AUTO-SUGGESTION HELPER ---
@@ -233,7 +214,7 @@ def search_cities(query: str):
 
 
 # --- 4. WEATHER TOOL IMPLEMENTATION ---
-def get_weather(location: str, forecast_type: str = "current", start_date: str = None, temperature_unit: str = "celsius") -> str:
+def get_weather(location: str, forecast_type: str = "current", start_date: str = None) -> str:
     try:
         geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={location}&count=1"
         geo_res = requests.get(geo_url).json()
@@ -244,9 +225,7 @@ def get_weather(location: str, forecast_type: str = "current", start_date: str =
         result = geo_res["results"][0]
         lat, lon = result["latitude"], result["longitude"]
         city_name, country = result["name"], result.get("country", "")
-        
-        unit_param = "fahrenheit" if temperature_unit.lower() == "fahrenheit" else "celsius"
-        base_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&timezone=auto&temperature_unit={unit_param}"
+        base_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&timezone=auto"
 
         if forecast_type == "hourly":
             date_param = f"&start_date={start_date}&end_date={start_date}" if start_date else "&forecast_days=1"
@@ -254,7 +233,6 @@ def get_weather(location: str, forecast_type: str = "current", start_date: str =
             data = requests.get(url).json()
             return json.dumps({
                 "location": f"{city_name}, {country}",
-                "temperature_unit": unit_param.capitalize(),
                 "timescale": f"Hourly forecast for {start_date if start_date else 'today'}",
                 "hourly": data.get("hourly", {})
             })
@@ -270,7 +248,6 @@ def get_weather(location: str, forecast_type: str = "current", start_date: str =
             data = requests.get(url).json()
             return json.dumps({
                 "location": f"{city_name}, {country}",
-                "temperature_unit": unit_param.capitalize(),
                 "timescale": f"7-Day Forecast (Starting {start_date if start_date else 'today'})",
                 "daily": data.get("daily", {})
             })
@@ -286,7 +263,6 @@ def get_weather(location: str, forecast_type: str = "current", start_date: str =
             data = requests.get(url).json()
             return json.dumps({
                 "location": f"{city_name}, {country}",
-                "temperature_unit": unit_param.capitalize(),
                 "timescale": f"16-Day Extended Forecast (Starting {start_date if start_date else 'today'})",
                 "daily": data.get("daily", {})
             })
@@ -295,14 +271,13 @@ def get_weather(location: str, forecast_type: str = "current", start_date: str =
             data = requests.get(url).json()
             return json.dumps({
                 "location": f"{city_name}, {country}",
-                "temperature_unit": unit_param.capitalize(),
                 "current": data.get("current_weather", {})
             })
     except Exception as e:
         return json.dumps({"error": str(e)})
 
 
-# --- 5. REGISTER BOTH API & CHROMADB RAG TOOLS ---
+# --- 5. REGISTER BOTH API & RAG TOOLS ---
 available_tools = {
     "get_weather": get_weather,
     "search_knowledge_base": search_knowledge_base
@@ -313,7 +288,7 @@ tools_schema = [
         "type": "function",
         "function": {
             "name": "get_weather",
-            "description": "Get real weather forecasts for any city worldwide across different time horizons and temperature units.",
+            "description": "Get real weather forecasts for any city worldwide across different time horizons.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -326,11 +301,6 @@ tools_schema = [
                     "start_date": {
                         "type": "string",
                         "description": "Start date in YYYY-MM-DD format"
-                    },
-                    "temperature_unit": {
-                        "type": "string",
-                        "enum": ["celsius", "fahrenheit"],
-                        "description": "Temperature scale to use: 'celsius' (°C) or 'fahrenheit' (°F)."
                     }
                 },
                 "required": ["location"],
@@ -341,7 +311,7 @@ tools_schema = [
         "type": "function",
         "function": {
             "name": "search_knowledge_base",
-            "description": "ChromaDB RAG tool: Search internal travel advisories, flight cancellation rules, and heatwave safety policies.",
+            "description": "RAG tool: Search internal travel advisories, flight cancellation rules, and heatwave safety policies.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -377,13 +347,13 @@ def call_llm_with_fallback(client, messages, tools_schema, primary_model="gpt-5.
 
 # --- 7. MAIN APPLICATION UI ---
 st.markdown('<h1 class="main-header">🌤️ Global Weather Intelligence Agent</h1>', unsafe_allow_html=True)
-st.caption("Powered by an agent harness with real-time weather APIs & persistent ChromaDB vector RAG search")
+st.caption("Powered by an agent harness with real-time weather APIs & vector RAG policy search")
 
 # Disclaimer Banner
 st.markdown(
     '''
     <div class="disclaimer-banner">
-        ⚠️ <b>Prototype Disclaimer:</b> This application is strictly an experimental demonstration of AI agent orchestration (API + ChromaDB RAG). It does not provide professional travel, safety, or weather advisory services.
+        ⚠️ <b>Experimental Prototype Disclaimer:</b> This application is strictly an experimental demonstration of AI agent orchestration (API + RAG). It does not provide professional travel, safety, or weather advisory services.
     </div>
     ''',
     unsafe_allow_html=True
@@ -398,8 +368,7 @@ with tab_app:
     if "city_input_text" not in st.session_state:
         st.session_state["city_input_text"] = "Tokyo"
 
-    # Step 1 and Step 2 Layout
-    col1, spacer_col1, col2 = st.columns([1.2, 0.25, 1.1])
+    col1, spacer_col, col2 = st.columns([1.2, 0.15, 1.1])
 
     with col1:
         def update_city_from_pill():
@@ -419,10 +388,7 @@ with tab_app:
         timescale_choice = st.radio("Horizon", ["Hourly Details", "1-Week Outlook (7 Days)", "0.5 Month Forecast (16 Days)"], label_visibility="collapsed")
 
     st.markdown("---")
-
-    # Step 3 and Step 4 Layout (Added generous spacer_col2 for wide horizontal separation)
-    date_col1, spacer_col2, unit_col2 = st.columns([1.2, 0.45, 1.0])
-    
+    date_col1, _ = st.columns([1, 1])
     with date_col1:
         today = date.today()
         max_forecast_date = today + timedelta(days=15)
@@ -444,39 +410,26 @@ with tab_app:
             selected_date = st.date_input("Start Date", value=today, min_value=today, max_value=today, disabled=True, label_visibility="collapsed")
             st.caption(f"ℹ️ **Guidance:** 16-day forecast covers **{today.strftime('%b %d')}** through **{max_forecast_date.strftime('%b %d, %Y')}**.")
 
-    with unit_col2:
-        st.markdown('<div class="form-step-label"><span class="form-step-number">4</span> Temperature Unit</div>', unsafe_allow_html=True)
-        unit_choice = st.radio("Temperature Scale", ["Celsius (°C)", "Fahrenheit (°F)"], horizontal=True, label_visibility="collapsed")
-        chosen_unit = "fahrenheit" if "Fahrenheit" in unit_choice else "celsius"
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    include_rag_check = st.checkbox("🔍 Also search internal Travel Advisories & Policies (Triggers ChromaDB RAG Tool)", value=True)
+    include_rag_check = st.checkbox("🔍 Also search internal Travel Advisories & Policies (Triggers RAG Tool)", value=True)
 
     submit_clicked = st.button("Submit & Run Agent 🚀", type="primary")
 
     if submit_clicked and raw_city.strip():
-        if not api_key:
-            st.error("⚠️ OpenAI API Key missing! Set `OPENAI_API_KEY` in `.streamlit/secrets.toml` or export it in your terminal environment variables.")
-            st.stop()
-
-        client = OpenAI(api_key=api_key)
         date_str = selected_date.strftime("%Y-%m-%d") if selected_date else today.strftime("%Y-%m-%d")
 
-        unit_label = "Fahrenheit (°F)" if chosen_unit == "fahrenheit" else "Celsius (°C)"
-
         if timescale_option == "Hourly":
-            user_query = f"Give me an hourly weather forecast for {raw_city.strip()} on {date_str} in {unit_label}."
+            user_query = f"Give me an hourly weather forecast for {raw_city.strip()} on {date_str}."
         elif timescale_option == "1-Week (7 Days)":
             end_date_str = (selected_date + timedelta(days=6)).strftime("%Y-%m-%d")
-            user_query = f"Give me a 1-week weather forecast for {raw_city.strip()} starting from {date_str} to {end_date_str} in {unit_label}."
+            user_query = f"Give me a 1-week weather forecast for {raw_city.strip()} starting from {date_str} to {end_date_str}."
         else:
             end_date_str = (selected_date + timedelta(days=15)).strftime("%Y-%m-%d")
-            user_query = f"Give me a 0.5 month (16 days) weather forecast for {raw_city.strip()} starting from {date_str} to {end_date_str} in {unit_label}."
+            user_query = f"Give me a 0.5 month (16 days) weather forecast for {raw_city.strip()} starting from {date_str} to {end_date_str}."
 
         if include_rag_check:
             user_query += f" Also search our travel advisories for any relevant flight policies or weather warnings for {raw_city.strip()}."
 
-        user_query += f" Always pass `temperature_unit='{chosen_unit}'` to the weather tool, format forecast data in a clear Markdown table, and use identical H3 (###) headers for all section titles."
+        user_query += " Format forecast data in a clear Markdown table."
 
         st.markdown("---")
         st.markdown(
@@ -491,16 +444,8 @@ with tab_app:
 
         col_trace, col_output = st.columns([1, 1])
 
-        system_instruction = (
-            "You are a weather & travel assistant. Use available tools (weather API and ChromaDB RAG internal knowledge base) "
-            "to answer user questions completely. Ensure temperatures are displayed in " + unit_label + ". "
-            "CRITICAL FORMATTING REQUIREMENT: Strictly use H3 level Markdown headers (###) for ALL section titles in your response "
-            "(e.g., '### Weather Forecast', '### Relevant Travel Advisories / Weather Warnings', '### Summary'). "
-            "Do NOT mix heading levels (such as ## or ####) or use bold text as standard section titles."
-        )
-
         messages = [
-            {"role": "system", "content": system_instruction},
+            {"role": "system", "content": "You are a weather & travel assistant. Use available tools (weather API and RAG internal knowledge base) to answer user questions completely."},
             {"role": "user", "content": user_query}
         ]
         
@@ -526,7 +471,7 @@ with tab_app:
                         fn_name = tool_call.function.name
                         fn_args = json.loads(tool_call.function.arguments)
                         
-                        tool_type = "ChromaDB RAG Search" if fn_name == "search_knowledge_base" else "Live API Request"
+                        tool_type = "RAG Vector Search" if fn_name == "search_knowledge_base" else "Live API Request"
                         badge_color = "#854d0e" if fn_name == "search_knowledge_base" else "#312e81"
 
                         st.markdown(f"""
@@ -560,17 +505,19 @@ with tab_app:
 
 # --- TAB 2: HARNESS ARCHITECTURE DEEP DIVE ---
 with tab_explanation:
-    st.subheader("🏗️ Agent Harness & ChromaDB RAG Architecture Deep Dive")
+    st.subheader("🏗️ Agent Harness & RAG Architecture Deep Dive")
     
+    # 1. RESIZED & CENTERED DIAGRAM
     img_col1, img_col2, img_col3 = st.columns([1, 3, 1])
     with img_col2:
         try:
             st.image("agent-harness-rag.svg", width=650)
         except Exception:
-            st.info("💡 Place 'agent-harness-rag.svg' in your working directory to display the flowchart.")
+            st.info("💡 Place 'agent-harness-rag-ocean.svg' in your working directory to display the flowchart.")
 
     st.markdown("---")
 
+    # 2. ARCHITECTURE SUMMARY EXPLANATION WITH BLUISH-PURPLE HEADINGS
     st.subheader("📌 System Architecture Summary")
 
     col_a, col_b = st.columns(2)
@@ -578,8 +525,8 @@ with tab_explanation:
     with col_a:
         st.markdown("""
         <h4 style="color: #a78bfa; font-weight: 600; margin-bottom: 8px;">1. Input Prompt Formatting</h4>
-        <p style="margin-top: 0;">The user's UI selections are deterministically compiled into a unified prompt string:<br>
-        <code>"User choice -> formatted -> Prompt: 'Give me a 1-week weather forecast for Tokyo in Fahrenheit (°F)'"</code></p>
+        <p style="margin-top: 0;">The user's UI selections (city choice, date horizon, and advisory checkboxes) are deterministically compiled into a unified prompt string:<br>
+        <code>"User choice -> formatted -> Prompt: 'Give me a 1-week weather forecast for Tokyo'"</code></p>
 
         <h4 style="color: #a78bfa; font-weight: 600; margin-bottom: 8px; margin-top: 20px;">2. Context & Memory Manager</h4>
         <p style="margin-top: 0;">Maintains the <code>messages</code> history array across execution cycles, preserving system instructions, user queries, and previous tool outputs.</p>
@@ -587,20 +534,22 @@ with tab_explanation:
         <h4 style="color: #a78bfa; font-weight: 600; margin-bottom: 8px; margin-top: 20px;">3. Tool Schema Registry</h4>
         <p style="margin-top: 0;">Exposes executable python tools to the LLM using standard OpenAI JSON schema format:</p>
         <ul>
-            <li><b>API Tool</b>: <code>get_weather(location, forecast_type, start_date, temperature_unit)</code></li>
-            <li><b>ChromaDB RAG Tool</b>: <code>search_knowledge_base(query)</code></li>
+            <li><b>API Tool</b>: <code>get_weather(location, forecast_type, start_date)</code></li>
+            <li><b>RAG Tool</b>: <code>search_knowledge_base(query)</code></li>
         </ul>
         """, unsafe_allow_html=True)
 
     with col_b:
         st.markdown("""
         <h4 style="color: #a78bfa; font-weight: 600; margin-bottom: 8px;">4. LLM Decision & Branch Routing</h4>
-        <p style="margin-top: 0;">The inference model inspects the prompt against advertised schemas and routes execution along one or more paths:</p>
+        <p style="margin-top: 0;">The inference model (e.g., GPT-5.5) inspects the prompt against advertised schemas and routes execution along one or more paths:</p>
         <ul>
-            <li><b>Weather API Path</b>: Fetches real-time weather metrics via the Open-Meteo REST API using chosen unit (Celsius/Fahrenheit).</li>
-            <li><b>ChromaDB RAG Path</b>: Embeds the query locally and retrieves document matches from persistent disk-backed storage (<code>./chroma_db</code>).</li>
+            <li><b>Weather API Path</b>: Fetches real-time weather metrics via the Open-Meteo REST API.</li>
+            <li><b>RAG Search Path</b>: Embeds the query and queries internal travel/flight policies using vector cosine similarity.</li>
+            <li><b>No Tool Needed Path</b> <i>(Rarely used in this query-driven app)</i>: Handles direct conversational prompts without external calls.</li>
         </ul>
 
         <h4 style="color: #a78bfa; font-weight: 600; margin-bottom: 8px; margin-top: 20px;">5. ReAct Execution Loop & Exit</h4>
-        <p style="margin-top: 0;">Tool output payloads are appended back to the harness context as <code>{role: "tool"}</code> messages. The harness loops back to the LLM until all function calls complete, producing a synthesized final Markdown response.</p>
+        <p style="margin-top: 0;">Tool output JSON/text payloads are appended back to the harness context as <code>{role: "tool"}</code> messages. The harness loops back to the LLM until all function calls complete, producing a synthesized final Markdown response.<br>
+        <i>💡 <b>Note:</b> <b><span style="color: #a78bfa;">Re</span><span style="color: #a78bfa;">Act</span></b> refers to a combination of internal model <b><span style="color: #a78bfa;">Re</span></b>asoning with external tool <b><span style="color: #a78bfa;">Act</span></b>ion invocation.</i></p>
         """, unsafe_allow_html=True)
