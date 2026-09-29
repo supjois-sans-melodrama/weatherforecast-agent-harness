@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -216,3 +217,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+=======
+# Ignore Streamlit local secrets (contains OPENAI_API_KEY)
+.streamlit/secrets.toml
+
+# Ignore Python virtual environments
+venv/
+.venv/
+env/
+
+# Ignore Python bytecode caches
+__pycache__/
+*.pyc
+
+# Ignore OS files
+.DS_Store
+>>>>>>> 2b7d02d (Initial commit)
