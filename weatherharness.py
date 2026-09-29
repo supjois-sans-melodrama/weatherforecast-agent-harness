@@ -551,5 +551,5 @@ with tab_explanation:
 
         <h4 style="color: #a78bfa; font-weight: 600; margin-bottom: 8px; margin-top: 20px;">5. ReAct Execution Loop & Exit</h4>
         <p style="margin-top: 0;">Tool output JSON/text payloads are appended back to the harness context as <code>{role: "tool"}</code> messages. The harness loops back to the LLM until all function calls complete, producing a synthesized final Markdown response.<br>
-        <i>💡 <b>Note:</b> <b>ReAct</b> refers to a combination of internal model <b>Re</b>asoning with external tool <b>Act</b>ion or execution.</i></p>
+        <i>💡 <b>Note:</b> <b><span style="color: #a78bfa;">Re</span><span style="color: #a78bfa;">Act</span></b> refers to a combination of internal model <b><span style="color: #a78bfa;">Re</span></b>asoning with external tool <b><span style="color: #a78bfa;">Act</span></b>ion invocation.</i></p>
         """, unsafe_allow_html=True)
