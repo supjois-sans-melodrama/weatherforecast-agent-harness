@@ -565,9 +565,9 @@ with tab_explanation:
     img_col1, img_col2, img_col3 = st.columns([1, 3, 1])
     with img_col2:
         try:
-            st.image("agent-harness-rag.svg", width=650)
+            st.image("agent-harness.svg", width=650)
         except Exception:
-            st.info("💡 Place 'agent-harness-rag.svg' in your working directory to display the flowchart.")
+            st.info("💡 Place 'agent-harness.svg' in your working directory to display the flowchart.")
 
     st.markdown("---")
 
