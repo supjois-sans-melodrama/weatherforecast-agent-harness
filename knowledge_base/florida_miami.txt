@@ -1,1 +1,5 @@
+<<<<<<< HEAD
 Miami, Florida Weather & Hurricane Advisory: Tropical monsoon climate with intense afternoon thunderstorms from June to October. Official hurricane season spans June 1 to November 30. High risk of king tides and tidal flooding during autumn full moons.
+=======
+Miami, Florida Weather & Hurricane Advisory: Tropical monsoon climate with intense afternoon thunderstorms from June to October. Official hurricane season spans June 1 to November 30. High risk of king tides and tidal flooding during autumn full moons.
+>>>>>>> b0e7ea7 (RAG info)
