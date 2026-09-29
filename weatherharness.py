@@ -395,7 +395,7 @@ def call_llm_with_fallback(client, messages, tools_schema, primary_model="gpt-5.
 
 # --- 7. MAIN APPLICATION UI ---
 st.markdown('<h1 class="main-header">🌤️ Global Weather Intelligence Agent</h1>', unsafe_allow_html=True)
-st.caption(f"Powered by an agent harness with real-time weather APIs & persistent ChromaDB vector RAG ({chroma_collection.count()} text files loaded from `./knowledge_base`)")
+st.caption(f"Powered by an agent harness with real-time weather APIs & persistent ChromaDB vector RAG")
 
 # Disclaimer Banner
 st.markdown(
