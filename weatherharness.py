@@ -32,7 +32,6 @@ st.markdown("""
         color: #e2e8f0; 
     }
     
-    /* MAIN APPLICATION TITLE HEADER */
     .main-header {
         font-size: 2.3rem !important;
         font-weight: 800 !important;
@@ -143,7 +142,6 @@ st.markdown("""
         text-transform: uppercase;
     }
     
-    /* UNIFORM SUB-SECTION HEADINGS (EXCLUDES MAIN TITLE) */
     .stMarkdown h2, .stMarkdown h3, .stMarkdown h4 {
         font-size: 1.25rem !important;
         font-weight: 700 !important;
@@ -157,25 +155,38 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# --- 1. AUTOMATIC API KEY INITIALIZATION (FROM SECRETS OR TERMINAL) ---
+# --- 1. AUTOMATIC API KEY INITIALIZATION ---
 api_key = os.environ.get("OPENAI_API_KEY") or (st.secrets.get("OPENAI_API_KEY") if hasattr(st, "secrets") else None)
 
 
-# --- 2. CHROMADB VECTOR RAG KNOWLEDGE BASE SETUP ---
+# --- 2. CHROMADB VECTOR RAG (DYNAMIC SCAN OF `./knowledge_base` DIR) ---
 CHROMA_DB_DIR = "./chroma_db"
+KNOWLEDGE_BASE_DIR = "./knowledge_base"
 
-SAMPLE_KNOWLEDGE_DOCS = [
-    {"id": "doc1", "text": "Travel Advisory Tokyo: Monsoon and rain activity typically spikes during summer months (June to August). Packing light rain gear is recommended."},
-    {"id": "doc2", "text": "Travel Advisory Kathmandu: Winter temperatures (November to January) can drop to 2°C at night. Layered clothing and thermal jackets are required."},
-    {"id": "doc3", "text": "Flight Cancellation Policy due to Severe Weather: Flights delayed over 4 hours due to storms or typhoons qualify for full ticket refund or free rebooking."},
-    {"id": "doc4", "text": "Heatwave Emergency Guidelines: When temperatures exceed 38°C (100°F), stay indoors between 12 PM and 4 PM, consume electrolytes, and avoid heavy exercise."}
-]
+def load_txt_files_from_dir(dir_path: str):
+    """Scans `./knowledge_base` for all .txt files and extracts their content."""
+    docs = []
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path, exist_ok=True)
+        return docs
+
+    for filename in os.listdir(dir_path):
+        if filename.endswith(".txt"):
+            file_path = os.path.join(dir_path, filename)
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    text = f.read().strip()
+                    if text:
+                        doc_id = os.path.splitext(filename)[0]
+                        docs.append({"id": doc_id, "text": text, "source": filename})
+            except Exception as e:
+                st.warning(f"Failed to read file {filename}: {e}")
+    return docs
 
 @st.cache_resource
 def get_chroma_collection():
-    """Initializes ChromaDB with local embeddings (all-MiniLM-L6-v2) without exposing keys to the client."""
+    """Initializes ChromaDB and ingests .txt files directly from `./knowledge_base` folder."""
     chroma_client = chromadb.PersistentClient(path=CHROMA_DB_DIR)
-    
     ef = embedding_functions.DefaultEmbeddingFunction()
     
     collection = chroma_client.get_or_create_collection(
@@ -183,12 +194,19 @@ def get_chroma_collection():
         embedding_function=ef
     )
     
-    if collection.count() == 0:
-        documents = [doc["text"] for doc in SAMPLE_KNOWLEDGE_DOCS]
-        ids = [doc["id"] for doc in SAMPLE_KNOWLEDGE_DOCS]
-        metadatas = [{"source": "sample_policy_docs"} for _ in SAMPLE_KNOWLEDGE_DOCS]
-        collection.add(documents=documents, ids=ids, metadatas=metadatas)
+    # Load all files from knowledge_base folder
+    file_docs = load_txt_files_from_dir(KNOWLEDGE_BASE_DIR)
+    
+    if file_docs:
+        existing_ids = set(collection.get()["ids"]) if collection.count() > 0 else set()
         
+        new_docs = [doc["text"] for doc in file_docs if doc["id"] not in existing_ids]
+        new_ids = [doc["id"] for doc in file_docs if doc["id"] not in existing_ids]
+        new_meta = [{"source": doc["source"]} for doc in file_docs if doc["id"] not in existing_ids]
+        
+        if new_ids:
+            collection.add(documents=new_docs, ids=new_ids, metadatas=new_meta)
+            
     return collection
 
 chroma_collection = get_chroma_collection()
@@ -198,12 +216,12 @@ def search_knowledge_base(query: str) -> str:
     try:
         results = chroma_collection.query(
             query_texts=[query],
-            n_results=2
+            n_results=3
         )
         
         docs = results.get("documents", [[]])[0]
         if not docs:
-            return json.dumps({"results": ["No highly relevant local travel/weather advisory documents found."]})
+            return json.dumps({"results": ["No relevant advisories or policy documents found in knowledge base."]})
             
         return json.dumps({"retrieved_context": docs})
     except Exception as e:
@@ -341,11 +359,11 @@ tools_schema = [
         "type": "function",
         "function": {
             "name": "search_knowledge_base",
-            "description": "ChromaDB RAG tool: Search internal travel advisories, flight cancellation rules, and heatwave safety policies.",
+            "description": "ChromaDB RAG tool: Search local .txt files from ./knowledge_base directory containing travel advisories, flight rules, and weather safety policies.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Search query topic or question"}
+                    "query": {"type": "string", "description": "City name, country, or weather policy query topic"}
                 },
                 "required": ["query"],
             },
@@ -377,7 +395,7 @@ def call_llm_with_fallback(client, messages, tools_schema, primary_model="gpt-5.
 
 # --- 7. MAIN APPLICATION UI ---
 st.markdown('<h1 class="main-header">🌤️ Global Weather Intelligence Agent</h1>', unsafe_allow_html=True)
-st.caption("Powered by an agent harness with real-time weather APIs & persistent ChromaDB vector RAG search")
+st.caption(f"Powered by an agent harness with real-time weather APIs & persistent ChromaDB vector RAG ({chroma_collection.count()} text files loaded from `./knowledge_base`)")
 
 # Disclaimer Banner
 st.markdown(
@@ -398,7 +416,6 @@ with tab_app:
     if "city_input_text" not in st.session_state:
         st.session_state["city_input_text"] = "Tokyo"
 
-    # Step 1 and Step 2 Layout
     col1, spacer_col1, col2 = st.columns([1.2, 0.25, 1.1])
 
     with col1:
@@ -420,7 +437,6 @@ with tab_app:
 
     st.markdown("---")
 
-    # Step 3 and Step 4 Layout (Added generous spacer_col2 for wide horizontal separation)
     date_col1, spacer_col2, unit_col2 = st.columns([1.2, 0.45, 1.0])
     
     with date_col1:
@@ -450,7 +466,7 @@ with tab_app:
         chosen_unit = "fahrenheit" if "Fahrenheit" in unit_choice else "celsius"
 
     st.markdown("<br>", unsafe_allow_html=True)
-    include_rag_check = st.checkbox("🔍 Also search internal Travel Advisories & Policies (Triggers ChromaDB RAG Tool)", value=True)
+    include_rag_check = st.checkbox("🔍 Also search internal `./knowledge_base` documents (Triggers ChromaDB RAG Tool)", value=True)
 
     submit_clicked = st.button("Submit & Run Agent 🚀", type="primary")
 
@@ -474,7 +490,7 @@ with tab_app:
             user_query = f"Give me a 0.5 month (16 days) weather forecast for {raw_city.strip()} starting from {date_str} to {end_date_str} in {unit_label}."
 
         if include_rag_check:
-            user_query += f" Also search our travel advisories for any relevant flight policies or weather warnings for {raw_city.strip()}."
+            user_query += f" Also search our knowledge base in ChromaDB for any relevant flight policies or weather warnings for {raw_city.strip()}."
 
         user_query += f" Always pass `temperature_unit='{chosen_unit}'` to the weather tool, format forecast data in a clear Markdown table, and use identical H3 (###) headers for all section titles."
 
