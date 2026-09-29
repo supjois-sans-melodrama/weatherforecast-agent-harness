@@ -380,7 +380,7 @@ with tab_app:
 
         suggestions = search_cities(raw_city)
         if suggestions:
-            st.caption("👇 Search a city or pick from a suggestion below:")
+            st.caption("👇 Search a city and pick from a result or suggestion below:")
             st.pills(label="Suggestions", options=suggestions, label_visibility="collapsed", key="suggestion_pills", on_change=update_city_from_pill)
 
     with col2:
