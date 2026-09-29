@@ -412,7 +412,7 @@ with tab_app:
 
     include_rag_check = st.checkbox("🔍 Also search internal Travel Advisories & Policies (Triggers RAG Tool)", value=True)
 
-    submit_clicked = st.button("Submit Q&A & Run Agent 🚀", type="primary")
+    submit_clicked = st.button("Submit & Run Agent 🚀", type="primary")
 
     if submit_clicked and raw_city.strip():
         date_str = selected_date.strftime("%Y-%m-%d") if selected_date else today.strftime("%Y-%m-%d")
